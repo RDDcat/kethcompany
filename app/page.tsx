@@ -1,65 +1,125 @@
-import Image from "next/image";
+import Link from "next/link";
 
 export default function Home() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div style={styles.container}>
+      <header style={styles.header}>
+        <h1 style={styles.title}>KETHcompany</h1>
+        <p style={styles.subtitle}>테스트용 zeroboard 스타일 FAQ 보드</p>
+      </header>
+
+      <main style={styles.main}>
+        <div style={styles.card}>
+          <h2 style={styles.cardTitle}>FAQ 게시판</h2>
+          <p style={styles.cardDesc}>자주 묻는 질문과 답변을 확인하세요.</p>
+          <Link href="/zeroboard/zboard.php?id=FAQ" style={styles.link}>
+            FAQ 바로가기 →
+          </Link>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <div style={styles.info}>
+          <h3 style={styles.infoTitle}>테스트 URL 예시</h3>
+          <ul style={styles.list}>
+            <li style={styles.listItem}>
+              <Link href="/zeroboard/zboard.php?id=FAQ" style={styles.infoLink}>
+                목록 페이지
+              </Link>
+            </li>
+            <li style={styles.listItem}>
+              <Link href="/zeroboard/zboard.php?id=FAQ&page=2" style={styles.infoLink}>
+                2페이지
+              </Link>
+            </li>
+            <li style={styles.listItem}>
+              <Link href="/zeroboard/zboard.php?id=FAQ&no=43" style={styles.infoLink}>
+                상세 보기 (no=43)
+              </Link>
+            </li>
+            <li style={styles.listItem}>
+              <Link href="/zeroboard/zboard.php?id=FAQ&keyword=환불" style={styles.infoLink}>
+                검색 (환불)
+              </Link>
+            </li>
+            <li style={styles.listItem}>
+              <Link href="/zeroboard/zboard.php?id=FAQ&select_arrange=views&desc=desc" style={styles.infoLink}>
+                조회순 정렬
+              </Link>
+            </li>
+          </ul>
         </div>
       </main>
     </div>
   );
 }
+
+const styles: { [key: string]: React.CSSProperties } = {
+  container: {
+    maxWidth: 800,
+    margin: '0 auto',
+    padding: '40px 20px',
+    fontFamily: "'Malgun Gothic', '맑은 고딕', Arial, sans-serif",
+  },
+  header: {
+    textAlign: 'center',
+    marginBottom: 40,
+    paddingBottom: 20,
+    borderBottom: '2px solid #333',
+  },
+  title: {
+    fontSize: 32,
+    margin: '0 0 10px 0',
+    color: '#333',
+  },
+  subtitle: {
+    color: '#666',
+    margin: 0,
+  },
+  main: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 30,
+  },
+  card: {
+    background: '#f9f9f9',
+    border: '1px solid #ddd',
+    padding: 30,
+    textAlign: 'center',
+  },
+  cardTitle: {
+    margin: '0 0 10px 0',
+    fontSize: 20,
+  },
+  cardDesc: {
+    color: '#666',
+    margin: '0 0 20px 0',
+  },
+  link: {
+    display: 'inline-block',
+    padding: '12px 24px',
+    background: '#333',
+    color: '#fff',
+    textDecoration: 'none',
+    fontSize: 14,
+  },
+  info: {
+    background: '#fff',
+    border: '1px solid #ddd',
+    padding: '20px 30px',
+  },
+  infoTitle: {
+    margin: '0 0 15px 0',
+    fontSize: 16,
+    color: '#333',
+  },
+  list: {
+    margin: 0,
+    padding: '0 0 0 20px',
+  },
+  listItem: {
+    margin: '8px 0',
+  },
+  infoLink: {
+    color: '#0066cc',
+    textDecoration: 'none',
+  },
+};
