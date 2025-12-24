@@ -932,3 +932,4 @@ export function getTotalPages(posts: FaqPost[]): number {
   return Math.ceil(posts.length / POSTS_PER_PAGE);
 }
 
+

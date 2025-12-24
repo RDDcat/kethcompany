@@ -1,5 +1,3 @@
-import Link from "next/link";
-
 export default function Home() {
   return (
     <div style={styles.container}>
@@ -12,38 +10,38 @@ export default function Home() {
         <div style={styles.card}>
           <h2 style={styles.cardTitle}>FAQ 게시판</h2>
           <p style={styles.cardDesc}>자주 묻는 질문과 답변을 확인하세요.</p>
-          <Link href="/zeroboard/zboard.php?id=FAQ" style={styles.link}>
+          <a href="/zeroboard/zboard.php?id=FAQ" style={styles.link}>
             FAQ 바로가기 →
-          </Link>
+          </a>
         </div>
 
         <div style={styles.info}>
           <h3 style={styles.infoTitle}>테스트 URL 예시</h3>
           <ul style={styles.list}>
             <li style={styles.listItem}>
-              <Link href="/zeroboard/zboard.php?id=FAQ" style={styles.infoLink}>
+              <a href="/zeroboard/zboard.php?id=FAQ" style={styles.infoLink}>
                 목록 페이지
-              </Link>
+              </a>
             </li>
             <li style={styles.listItem}>
-              <Link href="/zeroboard/zboard.php?id=FAQ&page=2" style={styles.infoLink}>
+              <a href="/zeroboard/zboard.php?id=FAQ&page=2" style={styles.infoLink}>
                 2페이지
-              </Link>
+              </a>
             </li>
             <li style={styles.listItem}>
-              <Link href="/zeroboard/zboard.php?id=FAQ&no=43" style={styles.infoLink}>
+              <a href="/zeroboard/zboard.php?id=FAQ&no=43" style={styles.infoLink}>
                 상세 보기 (no=43)
-              </Link>
+              </a>
             </li>
             <li style={styles.listItem}>
-              <Link href="/zeroboard/zboard.php?id=FAQ&keyword=환불" style={styles.infoLink}>
+              <a href="/zeroboard/zboard.php?id=FAQ&keyword=환불" style={styles.infoLink}>
                 검색 (환불)
-              </Link>
+              </a>
             </li>
             <li style={styles.listItem}>
-              <Link href="/zeroboard/zboard.php?id=FAQ&select_arrange=views&desc=desc" style={styles.infoLink}>
+              <a href="/zeroboard/zboard.php?id=FAQ&select_arrange=views&desc=desc" style={styles.infoLink}>
                 조회순 정렬
-              </Link>
+              </a>
             </li>
           </ul>
         </div>
