@@ -1,7 +1,0 @@
-{
-  "buildCommand": "cd sites/test-faq && npm install && npm run build",
-  "outputDirectory": "sites/test-faq/.next",
-  "installCommand": "cd sites/test-faq && npm install",
-  "framework": "nextjs"
-}
-
