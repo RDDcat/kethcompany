@@ -26,6 +26,7 @@ export interface SeoPage {
   host: string;
   path: string;
   query_key: string | null;
+  version_id: string | null;  // SEO 페이지 버전 ID
   
   // SEO 설정
   h1_selector: string | null;
@@ -43,9 +44,29 @@ export interface SeoPage {
   updated_at: string;
 }
 
+export interface SitemapScan {
+  id: string;
+  host: string;
+  name: string | null;
+  url_count: number;
+  created_at: string;
+}
+
+export interface SeoPageVersion {
+  id: string;
+  host: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  source_scan_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SitemapEntry {
   id: string;
   host: string;
+  scan_id: string | null;
   loc: string;
   lastmod: string | null;
   priority: number | null;

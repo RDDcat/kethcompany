@@ -1,13 +1,19 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { supabase, type SeoPage, type Host } from '@/lib/supabase';
+import { useSearchParams } from 'next/navigation';
+import { supabase, type SeoPage, type Host, type SeoPageVersion } from '@/lib/supabase';
 
 export default function PagesPage() {
+  const searchParams = useSearchParams();
+  const versionIdFromUrl = searchParams.get('version');
+  
   const [pages, setPages] = useState<SeoPage[]>([]);
   const [hosts, setHosts] = useState<Host[]>([]);
+  const [versions, setVersions] = useState<SeoPageVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedHost, setSelectedHost] = useState<string>('');
+  const [selectedVersion, setSelectedVersion] = useState<string>('');
   const [editingPage, setEditingPage] = useState<SeoPage | null>(null);
 
   useEffect(() => {
@@ -16,27 +22,67 @@ export default function PagesPage() {
 
   useEffect(() => {
     if (selectedHost) {
-      fetchPages(selectedHost);
+      fetchVersions(selectedHost);
     }
   }, [selectedHost]);
 
+  useEffect(() => {
+    if (selectedVersion) {
+      fetchPages(selectedVersion);
+    } else {
+      setPages([]);
+    }
+  }, [selectedVersion]);
+
   async function fetchHosts() {
     const { data } = await supabase.from('hosts').select('*').order('domain');
-    if (data) {
+    if (data && data.length > 0) {
       setHosts(data);
-      if (data.length > 0) {
-        setSelectedHost(data[0].domain);
-      }
+      setSelectedHost(data[0].domain);
     }
     setLoading(false);
   }
 
-  async function fetchPages(host: string) {
+  async function fetchVersions(host: string) {
+    const { data } = await supabase
+      .from('seo_page_versions')
+      .select('*')
+      .eq('host', host)
+      .order('created_at', { ascending: false });
+    
+    if (data) {
+      setVersions(data);
+      
+      // URL에서 버전 ID가 있으면 선택
+      if (versionIdFromUrl) {
+        const version = data.find(v => v.id === versionIdFromUrl);
+        if (version) {
+          setSelectedVersion(version.id);
+          return;
+        }
+      }
+      
+      // 활성 버전이 있으면 선택, 없으면 첫 번째
+      const activeVersion = data.find(v => v.is_active);
+      if (activeVersion) {
+        setSelectedVersion(activeVersion.id);
+      } else if (data.length > 0) {
+        setSelectedVersion(data[0].id);
+      } else {
+        setSelectedVersion('');
+      }
+    } else {
+      setVersions([]);
+      setSelectedVersion('');
+    }
+  }
+
+  async function fetchPages(versionId: string) {
     setLoading(true);
     const { data } = await supabase
       .from('seo_pages')
       .select('*')
-      .eq('host', host)
+      .eq('version_id', versionId)
       .order('path');
     
     if (data) {
@@ -60,35 +106,96 @@ export default function PagesPage() {
 
     if (!error) {
       setEditingPage(null);
-      fetchPages(selectedHost);
+      fetchPages(selectedVersion);
     } else {
       alert('저장 실패: ' + error.message);
     }
   }
+
+  async function handleDelete(pageId: string) {
+    if (!confirm('이 페이지 설정을 삭제하시겠습니까?')) {
+      return;
+    }
+
+    const { error } = await supabase
+      .from('seo_pages')
+      .delete()
+      .eq('id', pageId);
+
+    if (!error) {
+      fetchPages(selectedVersion);
+    } else {
+      alert('삭제 실패: ' + error.message);
+    }
+  }
+
+  const selectedVersionData = versions.find(v => v.id === selectedVersion);
 
   return (
     <div>
       <h1 style={styles.title}>페이지별 SEO 설정</h1>
 
       <div style={styles.filterBar}>
-        <label style={styles.filterLabel}>호스트 선택:</label>
-        <select
-          value={selectedHost}
-          onChange={e => setSelectedHost(e.target.value)}
-          style={styles.select}
-        >
-          {hosts.map(host => (
-            <option key={host.id} value={host.domain}>{host.domain}</option>
-          ))}
-        </select>
+        <div style={styles.filterGroup}>
+          <label style={styles.filterLabel}>호스트:</label>
+          <select
+            value={selectedHost}
+            onChange={e => {
+              setSelectedHost(e.target.value);
+              setSelectedVersion('');
+            }}
+            style={styles.select}
+          >
+            {hosts.map(host => (
+              <option key={host.id} value={host.domain}>{host.domain}</option>
+            ))}
+          </select>
+        </div>
+
+        <div style={styles.filterGroup}>
+          <label style={styles.filterLabel}>버전:</label>
+          <select
+            value={selectedVersion}
+            onChange={e => setSelectedVersion(e.target.value)}
+            style={styles.select}
+          >
+            {versions.length === 0 ? (
+              <option value="">버전 없음</option>
+            ) : (
+              versions.map(version => (
+                <option key={version.id} value={version.id}>
+                  {version.name} {version.is_active ? '(활성)' : ''}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
       </div>
+
+      {selectedVersionData && (
+        <div style={styles.versionInfo}>
+          <span style={styles.versionName}>{selectedVersionData.name}</span>
+          {selectedVersionData.is_active ? (
+            <span style={styles.activeBadge}>Workers 활성</span>
+          ) : (
+            <span style={styles.inactiveBadge}>비활성</span>
+          )}
+          {selectedVersionData.description && (
+            <span style={styles.versionDesc}>{selectedVersionData.description}</span>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <p style={styles.loading}>로딩 중...</p>
+      ) : versions.length === 0 ? (
+        <div style={styles.empty}>
+          <p>생성된 SEO 버전이 없습니다.</p>
+          <p style={styles.hint}>사이트맵 크롤링 후 버전을 생성하세요.</p>
+        </div>
       ) : pages.length === 0 ? (
         <div style={styles.empty}>
           <p>등록된 페이지가 없습니다.</p>
-          <p style={styles.hint}>사이트맵 크롤링을 먼저 진행하세요.</p>
         </div>
       ) : (
         <div style={styles.pageList}>
@@ -96,12 +203,20 @@ export default function PagesPage() {
             <div key={page.id} style={styles.pageCard}>
               <div style={styles.pageHeader}>
                 <div style={styles.pagePath}>{page.path}</div>
-                <button
-                  style={styles.editBtn}
-                  onClick={() => setEditingPage(page)}
-                >
-                  수정
-                </button>
+                <div style={styles.pageActions}>
+                  <button
+                    style={styles.editBtn}
+                    onClick={() => setEditingPage(page)}
+                  >
+                    수정
+                  </button>
+                  <button
+                    style={styles.deleteBtn}
+                    onClick={() => handleDelete(page.id)}
+                  >
+                    삭제
+                  </button>
+                </div>
               </div>
               <div style={styles.pageInfo}>
                 <div style={styles.infoRow}>
@@ -237,8 +352,13 @@ const styles: { [key: string]: React.CSSProperties } = {
   filterBar: {
     display: 'flex',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 30,
+    gap: 24,
+    marginBottom: 20,
+  },
+  filterGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
   },
   filterLabel: {
     color: '#a0a0a0',
@@ -251,7 +371,42 @@ const styles: { [key: string]: React.CSSProperties } = {
     borderRadius: 6,
     color: '#e5e5e5',
     fontSize: 14,
-    minWidth: 200,
+    minWidth: 180,
+  },
+  versionInfo: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    padding: '12px 16px',
+    background: '#1a1a1a',
+    border: '1px solid #333',
+    borderRadius: 8,
+    marginBottom: 20,
+  },
+  versionName: {
+    fontSize: 16,
+    fontWeight: 600,
+    color: '#fff',
+  },
+  versionDesc: {
+    fontSize: 13,
+    color: '#666',
+    marginLeft: 8,
+  },
+  activeBadge: {
+    padding: '4px 8px',
+    background: '#22c55e',
+    color: '#fff',
+    borderRadius: 4,
+    fontSize: 11,
+    fontWeight: 500,
+  },
+  inactiveBadge: {
+    padding: '4px 8px',
+    background: '#333',
+    color: '#a0a0a0',
+    borderRadius: 4,
+    fontSize: 11,
   },
   loading: {
     color: '#a0a0a0',
@@ -287,6 +442,10 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontSize: 14,
     color: '#3b82f6',
   },
+  pageActions: {
+    display: 'flex',
+    gap: 8,
+  },
   editBtn: {
     padding: '6px 12px',
     background: '#3b82f6',
@@ -294,6 +453,16 @@ const styles: { [key: string]: React.CSSProperties } = {
     border: 'none',
     borderRadius: 4,
     fontSize: 12,
+    cursor: 'pointer',
+  },
+  deleteBtn: {
+    padding: '6px 12px',
+    background: '#ef4444',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 4,
+    fontSize: 12,
+    cursor: 'pointer',
   },
   pageInfo: {
     display: 'flex',
@@ -370,6 +539,7 @@ const modalStyles: { [key: string]: React.CSSProperties } = {
     borderRadius: 6,
     color: '#e5e5e5',
     fontSize: 14,
+    boxSizing: 'border-box',
   },
   textarea: {
     width: '100%',
@@ -381,6 +551,7 @@ const modalStyles: { [key: string]: React.CSSProperties } = {
     fontSize: 14,
     fontFamily: 'monospace',
     resize: 'vertical',
+    boxSizing: 'border-box',
   },
   buttons: {
     display: 'flex',
@@ -395,6 +566,7 @@ const modalStyles: { [key: string]: React.CSSProperties } = {
     border: 'none',
     borderRadius: 6,
     fontSize: 14,
+    cursor: 'pointer',
   },
   saveBtn: {
     padding: '10px 20px',
@@ -403,6 +575,6 @@ const modalStyles: { [key: string]: React.CSSProperties } = {
     border: 'none',
     borderRadius: 6,
     fontSize: 14,
+    cursor: 'pointer',
   },
 };
-

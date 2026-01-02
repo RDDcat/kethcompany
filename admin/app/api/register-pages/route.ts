@@ -9,13 +9,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'host와 entries 배열 필요' }, { status: 400 });
     }
 
-    // URL에서 path 추출
+    // URL에서 path 추출 - title에 기본값 추가
     const pages = entries.map((url: string) => {
       const urlObj = new URL(url);
       return {
         host,
         path: urlObj.pathname,
         query_key: urlObj.search || null,
+        title: '', // NOT NULL 에러 방지용 기본값
         is_active: true,
       };
     });
@@ -37,4 +38,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: String(e) }, { status: 500 });
   }
 }
-
