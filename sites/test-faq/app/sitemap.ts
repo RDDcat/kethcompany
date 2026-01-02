@@ -2,7 +2,8 @@ import { MetadataRoute } from 'next';
 import { faqPosts } from '@/src/mock/faq';
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = 'http://localhost:3000';
+  // 환경에 따라 baseUrl 설정
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://kethcompany.com';
   
   // 기본 페이지
   const routes: MetadataRoute.Sitemap = [
@@ -24,7 +25,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const totalPages = Math.ceil(faqPosts.length / 10);
   for (let i = 2; i <= totalPages; i++) {
     routes.push({
-      url: `${baseUrl}/zeroboard/zboard.php?id=FAQ&page=${i}`,
+      url: `${baseUrl}/zeroboard/zboard.php?id=FAQ&amp;page=${i}`,
       lastModified: new Date(),
       changeFrequency: 'weekly',
       priority: 0.7,
@@ -34,7 +35,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   // 개별 FAQ 상세 페이지
   faqPosts.forEach(post => {
     routes.push({
-      url: `${baseUrl}/zeroboard/zboard.php?id=FAQ&no=${post.no}`,
+      url: `${baseUrl}/zeroboard/zboard.php?id=FAQ&amp;no=${post.no}`,
       lastModified: new Date(post.createdAt),
       changeFrequency: 'monthly',
       priority: 0.8,
@@ -43,4 +44,3 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   return routes;
 }
-
