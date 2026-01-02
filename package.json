@@ -1,26 +1,16 @@
 {
-  "name": "nextjs",
-  "version": "0.1.0",
+  "name": "kethcompany-monorepo",
+  "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "sites/*",
+    "admin"
+  ],
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
-  },
-  "dependencies": {
-    "next": "16.1.1",
-    "react": "19.2.3",
-    "react-dom": "19.2.3"
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.1.1",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+    "dev:test-faq": "npm run dev --workspace=sites/test-faq",
+    "dev:admin": "npm run dev --workspace=admin",
+    "build:test-faq": "npm run build --workspace=sites/test-faq",
+    "build:admin": "npm run build --workspace=admin"
   }
 }
+
