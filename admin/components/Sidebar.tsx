@@ -10,6 +10,10 @@ const navItems = [
   { href: '/sitemap', label: '사이트맵 크롤링' },
 ];
 
+const bottomItems = [
+  { href: '/settings', label: '설정' },
+];
+
 export default function Sidebar() {
   const pathname = usePathname();
 
@@ -35,18 +39,52 @@ export default function Sidebar() {
           );
         })}
       </ul>
+      
+      {/* 하단 메뉴 */}
+      <div style={styles.bottomSection}>
+        <ul style={styles.nav}>
+          {bottomItems.map(item => {
+            const isActive = pathname === item.href;
+            return (
+              <li key={item.href}>
+                <Link
+                  href={item.href}
+                  style={{
+                    ...styles.navLink,
+                    ...(isActive ? styles.navLinkActive : {}),
+                  }}
+                >
+                  {isActive && <span style={styles.indicator} />}
+                  {item.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </nav>
   );
 }
 
 const styles: { [key: string]: React.CSSProperties } = {
   sidebar: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
     width: 240,
+    height: '100vh',
     background: '#1a1a1a',
     borderRight: '1px solid #333',
     padding: '20px 0',
-    flexShrink: 0,
-    minHeight: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'auto',
+    zIndex: 100,
+  },
+  bottomSection: {
+    marginTop: 'auto',
+    borderTop: '1px solid #333',
+    paddingTop: 12,
   },
   logo: {
     fontSize: 20,

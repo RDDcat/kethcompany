@@ -28,12 +28,11 @@ export default function RootLayout({
 
 const styles: { [key: string]: React.CSSProperties } = {
   container: {
-    display: 'flex',
     minHeight: '100vh',
   },
   main: {
-    flex: 1,
+    marginLeft: 240, // 사이드바 너비만큼 여백
     padding: 30,
-    overflow: 'auto',
+    minHeight: '100vh',
   },
 };

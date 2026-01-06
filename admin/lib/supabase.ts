@@ -39,6 +39,10 @@ export interface SeoPage {
   auto_h1: string | null;
   auto_title: string | null;
   
+  // 검토 상태
+  reviewed: boolean;
+  reviewed_at: string | null;
+  
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -59,6 +63,8 @@ export interface SeoPageVersion {
   description: string | null;
   is_active: boolean;
   source_scan_id: string | null;
+  ai_generated: boolean;
+  ai_generated_at: string | null;
   created_at: string;
   updated_at: string;
 }

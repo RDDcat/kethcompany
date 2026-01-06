@@ -59,6 +59,17 @@ CREATE INDEX IF NOT EXISTS idx_sitemap_scans_host ON sitemap_scans(host);
 ALTER TABLE sitemap_entries ADD COLUMN IF NOT EXISTS scan_id UUID REFERENCES sitemap_scans(id) ON DELETE CASCADE;
 
 -- ============================================
+-- AI 생성 및 검토 관련 컬럼
+-- ============================================
+-- seo_page_versions에 AI 생성 여부 추가
+ALTER TABLE seo_page_versions ADD COLUMN IF NOT EXISTS ai_generated BOOLEAN DEFAULT false;
+ALTER TABLE seo_page_versions ADD COLUMN IF NOT EXISTS ai_generated_at TIMESTAMPTZ;
+
+-- seo_pages에 검토 상태 추가
+ALTER TABLE seo_pages ADD COLUMN IF NOT EXISTS reviewed BOOLEAN DEFAULT false;
+ALTER TABLE seo_pages ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+
+-- ============================================
 -- RLS 정책 (필요시)
 -- ============================================
 -- ALTER TABLE seo_pages DISABLE ROW LEVEL SECURITY;

@@ -1,0 +1,488 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase';
+
+type AiModel = 'heuristic' | 'openai' | 'claude';
+
+interface GenerateRequest {
+  versionId: string;
+  host: string;
+  pageIds: string[]; // 선택된 페이지 ID들 (비어있으면 전체)
+  fields: {
+    title: boolean;
+    description: boolean;
+    json_ld: boolean;
+    canonical: boolean;
+    h1_selector: boolean;
+  };
+  model: AiModel;
+  apiKey?: string; // 클라이언트에서 전달된 API 키
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body: GenerateRequest = await request.json();
+    const { versionId, host, pageIds, fields, model = 'heuristic', apiKey } = body;
+
+    // API 키 결정: 클라이언트 전달 → 환경변수 순
+    const openaiKey = apiKey || process.env.OPENAI_API_KEY;
+    const claudeKey = apiKey || process.env.ANTHROPIC_API_KEY;
+
+    if (!versionId || !host) {
+      return NextResponse.json(
+        { success: false, error: 'versionId, host 필요' },
+        { status: 400 }
+      );
+    }
+
+    // 적용할 필드가 하나도 없으면 에러
+    if (!fields.title && !fields.description && !fields.json_ld && !fields.canonical && !fields.h1_selector) {
+      return NextResponse.json(
+        { success: false, error: '적용할 필드를 선택하세요' },
+        { status: 400 }
+      );
+    }
+
+    // 대상 페이지 조회
+    let query = supabase
+      .from('seo_pages')
+      .select('*')
+      .eq('version_id', versionId);
+
+    if (pageIds && pageIds.length > 0) {
+      query = query.in('id', pageIds);
+    }
+
+    const { data: pages, error: pagesError } = await query;
+
+    if (pagesError || !pages) {
+      return NextResponse.json(
+        { success: false, error: pagesError?.message || '페이지 조회 실패' },
+        { status: 500 }
+      );
+    }
+
+    // 결과 저장용
+    const results: { pageId: string; path: string; status: 'success' | 'error'; message?: string; model?: string }[] = [];
+
+    // 사용된 모델 추적
+    let usedModel = model;
+
+    // 각 페이지 처리
+    for (const page of pages) {
+      try {
+        // 1. 실제 페이지 크롤링
+        const fullUrl = `https://${host}${page.path}`;
+        const pageContent = await fetchPageContent(fullUrl);
+
+        if (!pageContent) {
+          results.push({ pageId: page.id, path: page.path, status: 'error', message: '페이지 로드 실패', model: usedModel });
+          continue;
+        }
+
+        // 2. AI로 SEO 데이터 생성 (모델 선택)
+        const seoData = await generateSeoWithModel(
+          pageContent,
+          fullUrl,
+          fields,
+          model,
+          openaiKey,
+          claudeKey
+        );
+
+        if (!seoData) {
+          results.push({ pageId: page.id, path: page.path, status: 'error', message: 'AI 생성 실패', model: usedModel });
+          continue;
+        }
+
+        usedModel = seoData.usedModel || model;
+
+        // 3. DB 업데이트 (선택된 필드만)
+        const updateData: Record<string, unknown> = {
+          updated_at: new Date().toISOString(),
+        };
+
+        if (fields.title && seoData.title) updateData.title = seoData.title;
+        if (fields.description && seoData.description) updateData.description = seoData.description;
+        if (fields.json_ld && seoData.json_ld) updateData.json_ld = seoData.json_ld;
+        if (fields.canonical && seoData.canonical) updateData.canonical = seoData.canonical;
+        if (fields.h1_selector && seoData.h1_selector) updateData.h1_selector = seoData.h1_selector;
+
+        const { error: updateError } = await supabase
+          .from('seo_pages')
+          .update(updateData)
+          .eq('id', page.id);
+
+        if (updateError) {
+          results.push({ pageId: page.id, path: page.path, status: 'error', message: updateError.message, model: usedModel });
+        } else {
+          results.push({ pageId: page.id, path: page.path, status: 'success', model: usedModel });
+        }
+      } catch (e) {
+        results.push({ pageId: page.id, path: page.path, status: 'error', message: String(e), model: usedModel });
+      }
+    }
+
+    const successCount = results.filter(r => r.status === 'success').length;
+    const errorCount = results.filter(r => r.status === 'error').length;
+
+    // AI 생성 완료 플래그 업데이트
+    if (successCount > 0) {
+      await supabase
+        .from('seo_page_versions')
+        .update({
+          ai_generated: true,
+          ai_generated_at: new Date().toISOString(),
+        })
+        .eq('id', versionId);
+    }
+
+    return NextResponse.json({
+      success: true,
+      total: pages.length,
+      successCount,
+      errorCount,
+      model,
+      results,
+    });
+  } catch (e) {
+    return NextResponse.json(
+      { success: false, error: String(e) },
+      { status: 500 }
+    );
+  }
+}
+
+// 페이지 HTML 가져오기
+async function fetchPageContent(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; SEOBot/1.0)',
+        'Accept': 'text/html',
+      },
+    });
+
+    if (!res.ok) return null;
+
+    const html = await res.text();
+    return html;
+  } catch {
+    return null;
+  }
+}
+
+// 모델별 SEO 데이터 생성
+async function generateSeoWithModel(
+  html: string,
+  url: string,
+  fields: GenerateRequest['fields'],
+  model: AiModel,
+  openaiKey?: string,
+  claudeKey?: string
+): Promise<{
+  title?: string;
+  description?: string;
+  json_ld?: object;
+  canonical?: string;
+  h1_selector?: string;
+  usedModel?: string;
+} | null> {
+  // HTML에서 텍스트 추출 (간략화)
+  const textContent = extractTextContent(html);
+  const existingTitle = extractExistingTitle(html);
+  const existingH1 = extractExistingH1(html);
+  const possibleH1Selectors = findPossibleH1Selectors(html);
+
+  // 모델별 처리
+  if (model === 'openai' && openaiKey) {
+    const result = await generateWithOpenAI(textContent, url, fields, existingTitle, existingH1, possibleH1Selectors, openaiKey);
+    return result ? { ...result, usedModel: 'openai' } : null;
+  }
+
+  if (model === 'claude' && claudeKey) {
+    const result = await generateWithClaude(textContent, url, fields, existingTitle, existingH1, possibleH1Selectors, claudeKey);
+    return result ? { ...result, usedModel: 'claude' } : null;
+  }
+
+  // 휴리스틱 또는 API 키 없으면 휴리스틱 사용
+  const result = generateWithHeuristics(html, url, fields, existingTitle, existingH1, possibleH1Selectors);
+  return result ? { ...result, usedModel: 'heuristic' } : null;
+}
+
+// SEO 프롬프트 생성
+function buildSeoPrompt(
+  textContent: string,
+  url: string,
+  fields: GenerateRequest['fields'],
+  existingTitle: string,
+  existingH1: string,
+  possibleH1Selectors: string[]
+): string {
+  const fieldsToGenerate = [];
+  if (fields.title) fieldsToGenerate.push('title (60자 이내)');
+  if (fields.description) fieldsToGenerate.push('description (160자 이내)');
+  if (fields.json_ld) fieldsToGenerate.push('json_ld (Schema.org FAQPage 또는 WebPage 형식)');
+  if (fields.canonical) fieldsToGenerate.push('canonical URL');
+  if (fields.h1_selector) fieldsToGenerate.push(`h1_selector (사용 가능한 셀렉터: ${possibleH1Selectors.join(', ')})`);
+
+  return `다음 웹페이지 콘텐츠를 분석하여 SEO 메타데이터를 생성해주세요.
+
+URL: ${url}
+기존 title: ${existingTitle || '없음'}
+기존 h1: ${existingH1 || '없음'}
+
+페이지 콘텐츠 (일부):
+${textContent.substring(0, 3000)}
+
+생성할 필드: ${fieldsToGenerate.join(', ')}
+
+응답은 반드시 JSON 형식으로만 해주세요:
+{
+  ${fields.title ? '"title": "생성된 제목",' : ''}
+  ${fields.description ? '"description": "생성된 설명",' : ''}
+  ${fields.json_ld ? '"json_ld": { ... Schema.org 객체 ... },' : ''}
+  ${fields.canonical ? '"canonical": "정규 URL",' : ''}
+  ${fields.h1_selector ? '"h1_selector": "CSS 셀렉터"' : ''}
+}`;
+}
+
+// OpenAI API 호출
+async function generateWithOpenAI(
+  textContent: string,
+  url: string,
+  fields: GenerateRequest['fields'],
+  existingTitle: string,
+  existingH1: string,
+  possibleH1Selectors: string[],
+  apiKey: string
+): Promise<{
+  title?: string;
+  description?: string;
+  json_ld?: object;
+  canonical?: string;
+  h1_selector?: string;
+} | null> {
+  const prompt = buildSeoPrompt(textContent, url, fields, existingTitle, existingH1, possibleH1Selectors);
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'SEO 전문가로서 웹페이지 메타데이터를 생성합니다. 반드시 유효한 JSON만 응답합니다.' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.3,
+      }),
+    });
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content;
+
+    if (!content) return null;
+
+    // JSON 추출
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    return JSON.parse(jsonMatch[0]);
+  } catch {
+    return null;
+  }
+}
+
+// Claude API 호출
+async function generateWithClaude(
+  textContent: string,
+  url: string,
+  fields: GenerateRequest['fields'],
+  existingTitle: string,
+  existingH1: string,
+  possibleH1Selectors: string[],
+  apiKey: string
+): Promise<{
+  title?: string;
+  description?: string;
+  json_ld?: object;
+  canonical?: string;
+  h1_selector?: string;
+} | null> {
+  const prompt = buildSeoPrompt(textContent, url, fields, existingTitle, existingH1, possibleH1Selectors);
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 2048,
+        system: 'SEO 전문가로서 웹페이지 메타데이터를 생성합니다. 반드시 유효한 JSON만 응답합니다.',
+        messages: [
+          { role: 'user', content: prompt },
+        ],
+      }),
+    });
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const content = data.content?.[0]?.text;
+
+    if (!content) return null;
+
+    // JSON 추출
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    return JSON.parse(jsonMatch[0]);
+  } catch {
+    return null;
+  }
+}
+
+// 휴리스틱 기반 생성 (OpenAI 없을 때)
+function generateWithHeuristics(
+  html: string,
+  url: string,
+  fields: GenerateRequest['fields'],
+  existingTitle: string,
+  existingH1: string,
+  possibleH1Selectors: string[]
+): {
+  title?: string;
+  description?: string;
+  json_ld?: object;
+  canonical?: string;
+  h1_selector?: string;
+} {
+  const result: {
+    title?: string;
+    description?: string;
+    json_ld?: object;
+    canonical?: string;
+    h1_selector?: string;
+  } = {};
+
+  // Title: 기존 h1이 있으면 사용, 없으면 기존 title 사용
+  if (fields.title) {
+    result.title = existingH1 || existingTitle || 'Page Title';
+    // 60자 제한
+    if (result.title.length > 60) {
+      result.title = result.title.substring(0, 57) + '...';
+    }
+  }
+
+  // Description: 페이지에서 첫 문단 추출
+  if (fields.description) {
+    const textContent = extractTextContent(html);
+    const sentences = textContent.split(/[.!?]/).filter(s => s.trim().length > 20);
+    result.description = sentences.slice(0, 2).join('. ').substring(0, 160);
+    if (!result.description) {
+      result.description = existingTitle || existingH1 || 'Page description';
+    }
+  }
+
+  // Canonical: 현재 URL 정규화
+  if (fields.canonical) {
+    try {
+      const urlObj = new URL(url);
+      // 핵심 파라미터만 유지
+      const normalized = new URLSearchParams();
+      ['id', 'no'].forEach(key => {
+        if (urlObj.searchParams.has(key)) {
+          normalized.set(key, urlObj.searchParams.get(key)!);
+        }
+      });
+      result.canonical = urlObj.origin + urlObj.pathname + (normalized.toString() ? '?' + normalized.toString() : '');
+    } catch {
+      result.canonical = url;
+    }
+  }
+
+  // H1 Selector: 가장 적절한 셀렉터 선택
+  if (fields.h1_selector && possibleH1Selectors.length > 0) {
+    // 우선순위: data-seo-heading > .post-title > #title > 첫 번째
+    const priority = ['[data-seo-heading]', '.post-title', '#post-title', '.title', '#title'];
+    result.h1_selector = priority.find(s => possibleH1Selectors.includes(s)) || possibleH1Selectors[0];
+  }
+
+  // JSON-LD: 기본 WebPage 스키마
+  if (fields.json_ld) {
+    result.json_ld = {
+      '@context': 'https://schema.org',
+      '@type': 'WebPage',
+      'name': result.title || existingTitle || existingH1,
+      'description': result.description || '',
+      'url': result.canonical || url,
+    };
+  }
+
+  return result;
+}
+
+// HTML에서 텍스트 추출
+function extractTextContent(html: string): string {
+  // 스크립트, 스타일 태그 제거
+  let text = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+  text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
+  // 태그 제거
+  text = text.replace(/<[^>]+>/g, ' ');
+  // 공백 정리
+  text = text.replace(/\s+/g, ' ').trim();
+  return text;
+}
+
+// 기존 title 태그 추출
+function extractExistingTitle(html: string): string {
+  const match = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+  return match ? match[1].trim() : '';
+}
+
+// 기존 h1 태그 추출
+function extractExistingH1(html: string): string {
+  const match = html.match(/<h1[^>]*>([^<]*)<\/h1>/i);
+  return match ? match[1].trim() : '';
+}
+
+// h1으로 사용 가능한 셀렉터 찾기
+function findPossibleH1Selectors(html: string): string[] {
+  const selectors: string[] = [];
+  
+  // data-seo-heading 속성 찾기
+  if (html.includes('data-seo-heading')) {
+    selectors.push('[data-seo-heading]');
+  }
+
+  // 일반적인 제목 패턴 찾기
+  const patterns = [
+    { regex: /class=["'][^"']*post-title[^"']*["']/i, selector: '.post-title' },
+    { regex: /class=["'][^"']*page-title[^"']*["']/i, selector: '.page-title' },
+    { regex: /class=["'][^"']*entry-title[^"']*["']/i, selector: '.entry-title' },
+    { regex: /class=["'][^"']*article-title[^"']*["']/i, selector: '.article-title' },
+    { regex: /class=["'][^"']*main-title[^"']*["']/i, selector: '.main-title' },
+    { regex: /id=["']post-title["']/i, selector: '#post-title' },
+    { regex: /id=["']title["']/i, selector: '#title' },
+    { regex: /<h1[^>]*>/i, selector: 'h1' },
+    { regex: /<h2[^>]*>/i, selector: 'h2' },
+  ];
+
+  patterns.forEach(({ regex, selector }) => {
+    if (regex.test(html) && !selectors.includes(selector)) {
+      selectors.push(selector);
+    }
+  });
+
+  return selectors;
+}
+

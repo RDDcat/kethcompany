@@ -94,3 +94,4 @@ FROM seo_pages sp
 JOIN seo_page_versions spv ON sp.version_id = spv.id
 WHERE spv.is_active = true;
 
+
