@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase, type SeoPage, type Host, type SeoPageVersion } from '@/lib/supabase';
 
@@ -131,6 +131,29 @@ export default function PagesPage() {
     }
   }
 
+  // 버전 활성화 토글
+  async function toggleVersionActive(versionId: string, currentActive: boolean) {
+    // 먼저 해당 호스트의 모든 버전을 비활성화
+    if (!currentActive) {
+      await supabase
+        .from('seo_page_versions')
+        .update({ is_active: false })
+        .eq('host', selectedHost);
+    }
+    
+    // 선택한 버전 토글
+    const { error } = await supabase
+      .from('seo_page_versions')
+      .update({ is_active: !currentActive })
+      .eq('id', versionId);
+
+    if (!error) {
+      fetchVersions(selectedHost);
+    } else {
+      alert('상태 변경 실패: ' + error.message);
+    }
+  }
+
   const selectedVersionData = versions.find(v => v.id === selectedVersion);
 
   return (
@@ -177,25 +200,30 @@ export default function PagesPage() {
       {selectedVersionData && (
         <div style={styles.versionInfo}>
           <span style={styles.versionName}>{selectedVersionData.name}</span>
-          {selectedVersionData.is_active ? (
-            <span style={styles.activeBadge}>Workers 활성</span>
-          ) : (
-            <span style={styles.inactiveBadge}>비활성</span>
-          )}
+          <span
+            style={selectedVersionData.is_active ? styles.activeBadgeClickable : styles.inactiveBadgeClickable}
+            onClick={() => toggleVersionActive(selectedVersionData.id, selectedVersionData.is_active)}
+            title="클릭하여 활성화 상태 변경"
+          >
+            {selectedVersionData.is_active ? 'Workers 활성' : '비활성'}
+          </span>
           {selectedVersionData.description && (
             <span style={styles.versionDesc}>{selectedVersionData.description}</span>
           )}
           
-          {/* AI 생성 전: AI 자동 생성 버튼 / AI 생성 후: 검토하기 버튼 */}
-          {!selectedVersionData.ai_generated ? (
-            <button
-              style={styles.aiBtn}
-              onClick={() => setShowAiModal(true)}
-              disabled={pages.length === 0}
-            >
-              🤖 AI 자동 생성
-            </button>
-          ) : (
+          {/* 버튼 영역 - 오른쪽 정렬 */}
+          <div style={styles.versionActions}>
+            {/* AI 자동 생성 버튼 (AI 생성 전에만) */}
+            {!selectedVersionData.ai_generated && (
+              <button
+                style={styles.aiBtn}
+                onClick={() => setShowAiModal(true)}
+                disabled={pages.length === 0}
+              >
+                🤖 AI 자동 생성
+              </button>
+            )}
+            {/* 검토하기 버튼 (항상 표시) */}
             <button
               style={styles.reviewBtn}
               onClick={() => setShowReviewModal(true)}
@@ -203,7 +231,7 @@ export default function PagesPage() {
             >
               ✅ 검토하기 ({pages.filter(p => p.reviewed).length}/{pages.length})
             </button>
-          )}
+          </div>
         </div>
       )}
 
@@ -328,8 +356,32 @@ function AiGenerateModal({
     model: string;
     results: { path: string; status: string; message?: string; model?: string }[];
   } | null>(null);
+  const [apiKeyStatus, setApiKeyStatus] = useState({ openai: false, claude: false });
 
-  // 로컬 스토리지에서 API 키 가져오기
+  // 로컬 스토리지에서 API 키 상태 확인
+  const checkApiKeys = () => {
+    if (typeof window === 'undefined') return;
+    const settings = localStorage.getItem('ai-api-settings');
+    if (settings) {
+      const parsed = JSON.parse(settings);
+      setApiKeyStatus({
+        openai: !!parsed.openaiKey,
+        claude: !!parsed.claudeKey,
+      });
+    }
+  };
+
+  // 모달 마운트 시 & 창 포커스 시 확인
+  useEffect(() => {
+    checkApiKeys();
+    
+    // 창 포커스 시 다시 확인 (설정 페이지에서 돌아올 때)
+    const handleFocus = () => checkApiKeys();
+    window.addEventListener('focus', handleFocus);
+    
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
+
   function getApiKey(model: AiModel): string | null {
     if (typeof window === 'undefined') return null;
     const settings = localStorage.getItem('ai-api-settings');
@@ -338,6 +390,14 @@ function AiGenerateModal({
     if (model === 'openai') return parsed.openaiKey || null;
     if (model === 'claude') return parsed.claudeKey || null;
     return null;
+  }
+
+  // 선택된 모델에 API 키가 있는지 확인
+  function hasApiKeyForModel(model: AiModel): boolean {
+    if (model === 'heuristic') return true;
+    if (model === 'openai') return apiKeyStatus.openai;
+    if (model === 'claude') return apiKeyStatus.claude;
+    return false;
   }
 
   async function handleGenerate() {
@@ -367,35 +427,85 @@ function AiGenerateModal({
 
     try {
       const apiKey = getApiKey(selectedModel);
+      console.log('=== Client Debug ===');
+      console.log('Selected Model:', selectedModel);
+      console.log('API Key:', apiKey ? `${apiKey.substring(0, 10)}...` : 'null');
+      
       const res = await fetch('/api/ai-generate-seo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           versionId,
           host,
-          pageIds: [], // 전체 페이지
+          pageIds: [],
           fields,
           model: selectedModel,
-          apiKey: apiKey, // 로컬에서 가져온 키 전달
+          apiKey: apiKey,
         }),
       });
 
-      const data = await res.json();
+      // 스트리밍 응답 처리
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setProgress(prev => prev ? { ...prev, status: '오류: 스트림 읽기 실패' } : null);
+        return;
+      }
 
-      if (data.success) {
-        setProgress({
-          total: data.total,
-          current: data.total,
-          status: '완료!',
-          model: data.model || selectedModel,
-          results: data.results || [],
-        });
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-        setTimeout(() => {
-          onComplete();
-        }, 2000);
-      } else {
-        setProgress(prev => prev ? { ...prev, status: '오류: ' + data.error } : null);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        
+        // SSE 이벤트 파싱
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === 'init') {
+                setProgress({
+                  total: data.total,
+                  current: 0,
+                  status: '처리 중...',
+                  model: data.model,
+                  results: [],
+                });
+              } else if (data.type === 'progress') {
+                setProgress(prev => prev ? {
+                  ...prev,
+                  current: data.current,
+                  status: `처리 중... (${data.path})`,
+                } : null);
+              } else if (data.type === 'complete') {
+                console.log('AI generation complete:', data);
+                setProgress({
+                  total: data.total,
+                  current: data.total,
+                  status: `완료! (성공: ${data.successCount}, 실패: ${data.errorCount})`,
+                  model: data.model,
+                  results: data.results || [],
+                });
+                // 1.5초 후 완료 콜백 호출
+                setTimeout(() => {
+                  console.log('Calling onComplete...');
+                  onComplete();
+                }, 1500);
+              } else if (data.type === 'error') {
+                console.error('AI generation error:', data.error);
+                setProgress(prev => prev ? { ...prev, status: '오류: ' + data.error } : null);
+              }
+            } catch (e) {
+              console.error('SSE parse error:', e);
+            }
+          }
+        }
       }
     } catch (e) {
       setProgress(prev => prev ? { ...prev, status: '오류: ' + String(e) } : null);
@@ -477,9 +587,14 @@ function AiGenerateModal({
                   </label>
                 ))}
               </div>
-              {selectedModel !== 'heuristic' && (
+              {selectedModel !== 'heuristic' && !hasApiKeyForModel(selectedModel) && (
                 <p style={{ fontSize: 12, color: '#f59e0b', marginTop: 8 }}>
                   ⚠️ API 키가 필요합니다. 설정에서 등록하세요.
+                </p>
+              )}
+              {selectedModel !== 'heuristic' && hasApiKeyForModel(selectedModel) && (
+                <p style={{ fontSize: 12, color: '#22c55e', marginTop: 8 }}>
+                  ✓ API 키가 설정되어 있습니다.
                 </p>
               )}
             </div>
@@ -576,9 +691,32 @@ function ReviewModal({
   );
   const [saving, setSaving] = useState(false);
   const [showAll, setShowAll] = useState(unreviewedPages.length === 0);
+  const [selectorMode, setSelectorMode] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const displayPages = showAll ? pages : unreviewedPages;
   const currentPage = displayPages[currentIndex];
+
+  // 요소 선택 메시지 수신
+  useEffect(() => {
+    function handleMessage(e: MessageEvent) {
+      if (e.data.type === 'selectorSelected' && formData) {
+        setFormData({ ...formData, h1_selector: e.data.selector });
+        setSelectorMode(false);
+        // iframe에 선택 모드 해제 알림
+        iframeRef.current?.contentWindow?.postMessage({ type: 'toggleSelectorMode', enabled: false }, '*');
+      }
+    }
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [formData]);
+
+  // 선택 모드 토글
+  function toggleSelectorMode() {
+    const newMode = !selectorMode;
+    setSelectorMode(newMode);
+    iframeRef.current?.contentWindow?.postMessage({ type: 'toggleSelectorMode', enabled: newMode }, '*');
+  }
 
   // 페이지 변경 시 formData 업데이트
   function goToPage(index: number) {
@@ -613,15 +751,30 @@ function ReviewModal({
       return;
     }
 
+    // 페이지 목록 새로고침
     onUpdate();
 
-    // 다음 페이지로 이동
-    if (currentIndex < displayPages.length - 1) {
-      goToPage(currentIndex + 1);
+    // 다음 페이지로 이동 (전체 보기 모드일 때만)
+    if (showAll) {
+      if (currentIndex < displayPages.length - 1) {
+        goToPage(currentIndex + 1);
+      } else {
+        alert('모든 페이지 검토 완료!');
+        onClose();
+      }
     } else {
-      // 모든 검토 완료
-      alert('모든 페이지 검토 완료!');
-      onClose();
+      // 미검토 모드: 다음 미검토 페이지가 자동으로 현재 인덱스에 표시됨
+      // 다음 페이지 데이터로 formData 업데이트
+      const nextUnreviewed = pages.filter(p => !p.reviewed && p.id !== formData.id);
+      if (nextUnreviewed.length === 0) {
+        alert('모든 페이지 검토 완료!');
+        onClose();
+      } else {
+        // 다음 미검토 페이지로 formData 업데이트
+        const nextIndex = Math.min(currentIndex, nextUnreviewed.length - 1);
+        setCurrentIndex(nextIndex);
+        setFormData(nextUnreviewed[nextIndex]);
+      }
     }
   }
 
@@ -723,8 +876,12 @@ function ReviewModal({
               </a>
             </div>
             <iframe
-              src={fullUrl}
-              style={reviewStyles.iframe}
+              ref={iframeRef}
+              src={`/api/proxy-page?url=${encodeURIComponent(fullUrl)}`}
+              style={{
+                ...reviewStyles.iframe,
+                cursor: selectorMode ? 'crosshair' : 'default',
+              }}
               title="페이지 미리보기"
             />
           </div>
@@ -759,13 +916,37 @@ function ReviewModal({
 
             <div style={reviewStyles.formGroup}>
               <label style={reviewStyles.label}>H1 Selector</label>
-              <input
-                type="text"
-                value={formData.h1_selector || ''}
-                onChange={e => setFormData({ ...formData, h1_selector: e.target.value || null })}
-                placeholder="#post-title, .main-heading 등"
-                style={reviewStyles.input}
-              />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="text"
+                  value={formData.h1_selector || ''}
+                  onChange={e => setFormData({ ...formData, h1_selector: e.target.value || null })}
+                  placeholder="#post-title, .main-heading 등"
+                  style={{ ...reviewStyles.input, flex: 1 }}
+                />
+                <button
+                  type="button"
+                  onClick={toggleSelectorMode}
+                  style={{
+                    padding: '8px 12px',
+                    background: selectorMode ? '#ef4444' : '#3b82f6',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={selectorMode ? '선택 모드 해제' : '왼쪽 페이지에서 요소 클릭하여 선택'}
+                >
+                  {selectorMode ? '✕ 취소' : '🎯 선택'}
+                </button>
+              </div>
+              {selectorMode && (
+                <p style={{ fontSize: 11, color: '#3b82f6', marginTop: 6 }}>
+                  왼쪽 페이지에서 H1으로 변환할 요소를 클릭하세요
+                </p>
+              )}
             </div>
 
             <div style={reviewStyles.formGroup}>
@@ -793,7 +974,7 @@ function ReviewModal({
                 }}
                 placeholder='{"@context": "https://schema.org", ...}'
                 style={{ ...reviewStyles.textarea, fontFamily: 'monospace', fontSize: 12 }}
-                rows={5}
+                rows={12}
               />
             </div>
           </div>
@@ -894,8 +1075,8 @@ function EditModal({
               }
             }}
             placeholder='{"@context": "https://schema.org", ...}'
-            style={modalStyles.textarea}
-            rows={5}
+            style={{ ...modalStyles.textarea, fontFamily: 'monospace', fontSize: 12 }}
+            rows={10}
           />
         </div>
 
@@ -949,6 +1130,11 @@ const styles: { [key: string]: React.CSSProperties } = {
     borderRadius: 8,
     marginBottom: 20,
   },
+  versionActions: {
+    display: 'flex',
+    gap: 8,
+    marginLeft: 'auto',
+  },
   versionName: {
     fontSize: 16,
     fontWeight: 600,
@@ -974,8 +1160,28 @@ const styles: { [key: string]: React.CSSProperties } = {
     borderRadius: 4,
     fontSize: 11,
   },
+  activeBadgeClickable: {
+    padding: '4px 8px',
+    background: '#22c55e',
+    color: '#fff',
+    borderRadius: 4,
+    fontSize: 11,
+    fontWeight: 500,
+    cursor: 'pointer',
+    userSelect: 'none',
+    transition: 'opacity 0.2s',
+  },
+  inactiveBadgeClickable: {
+    padding: '4px 8px',
+    background: '#333',
+    color: '#a0a0a0',
+    borderRadius: 4,
+    fontSize: 11,
+    cursor: 'pointer',
+    userSelect: 'none',
+    transition: 'opacity 0.2s',
+  },
   aiBtn: {
-    marginLeft: 'auto',
     padding: '8px 16px',
     background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)',
     color: '#fff',
@@ -1211,7 +1417,9 @@ const aiStyles: { [key: string]: React.CSSProperties } = {
     flex: 1,
     padding: 16,
     background: '#252525',
-    border: '2px solid #333',
+    borderWidth: 2,
+    borderStyle: 'solid',
+    borderColor: '#333',
     borderRadius: 8,
     cursor: 'pointer',
     display: 'flex',

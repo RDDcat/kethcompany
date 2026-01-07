@@ -25,33 +25,41 @@ export default function SettingsPage() {
     openai: 'none',
     claude: 'none',
   });
+  const [testing, setTesting] = useState({ openai: false, claude: false });
+  const [testResult, setTestResult] = useState<{
+    openai: { success: boolean; message: string } | null;
+    claude: { success: boolean; message: string } | null;
+  }>({ openai: null, claude: null });
 
   useEffect(() => {
     // 로컬 스토리지에서 키 로드
     const savedSettings = localStorage.getItem('ai-api-settings');
+    let localSettings = { openaiKey: '', claudeKey: '' };
+    
     if (savedSettings) {
       const parsed = JSON.parse(savedSettings);
+      localSettings = parsed;
       setSettings(parsed);
     }
 
-    // 서버에서 환경변수 상태 확인
-    checkEnvKeys();
+    // 서버에서 환경변수 상태 확인 (로컬 설정값 전달)
+    checkEnvKeys(localSettings);
   }, []);
 
-  async function checkEnvKeys() {
+  async function checkEnvKeys(localSettings: { openaiKey: string; claudeKey: string }) {
     setChecking(true);
     try {
       const res = await fetch('/api/check-api-keys');
       const data = await res.json();
       setKeyStatus({
-        openai: data.openai ? 'env' : (settings.openaiKey ? 'local' : 'none'),
-        claude: data.claude ? 'env' : (settings.claudeKey ? 'local' : 'none'),
+        openai: data.openai ? 'env' : (localSettings.openaiKey ? 'local' : 'none'),
+        claude: data.claude ? 'env' : (localSettings.claudeKey ? 'local' : 'none'),
       });
     } catch {
       // 에러 시 로컬 상태만 확인
       setKeyStatus({
-        openai: settings.openaiKey ? 'local' : 'none',
-        claude: settings.claudeKey ? 'local' : 'none',
+        openai: localSettings.openaiKey ? 'local' : 'none',
+        claude: localSettings.claudeKey ? 'local' : 'none',
       });
     }
     setChecking(false);
@@ -71,6 +79,49 @@ export default function SettingsPage() {
 
   function handleClear(key: 'openaiKey' | 'claudeKey') {
     setSettings(prev => ({ ...prev, [key]: '' }));
+    // 테스트 결과도 초기화
+    const provider = key === 'openaiKey' ? 'openai' : 'claude';
+    setTestResult(prev => ({ ...prev, [provider]: null }));
+  }
+
+  async function handleTest(provider: 'openai' | 'claude') {
+    const apiKey = provider === 'openai' ? settings.openaiKey : settings.claudeKey;
+    
+    if (!apiKey) {
+      setTestResult(prev => ({ 
+        ...prev, 
+        [provider]: { success: false, message: 'API 키를 먼저 입력하세요.' } 
+      }));
+      return;
+    }
+
+    setTesting(prev => ({ ...prev, [provider]: true }));
+    setTestResult(prev => ({ ...prev, [provider]: null }));
+
+    try {
+      const res = await fetch('/api/test-api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, apiKey }),
+      });
+
+      const data = await res.json();
+      
+      setTestResult(prev => ({
+        ...prev,
+        [provider]: {
+          success: data.success,
+          message: data.success ? data.message : data.error,
+        },
+      }));
+    } catch (e) {
+      setTestResult(prev => ({
+        ...prev,
+        [provider]: { success: false, message: `테스트 실패: ${String(e)}` },
+      }));
+    } finally {
+      setTesting(prev => ({ ...prev, [provider]: false }));
+    }
   }
 
   function getStatusBadge(status: 'none' | 'env' | 'local') {
@@ -132,6 +183,23 @@ export default function SettingsPage() {
               </button>
             )}
           </div>
+          <div style={styles.testRow}>
+            <button
+              style={styles.testBtn}
+              onClick={() => handleTest('openai')}
+              disabled={testing.openai || !settings.openaiKey}
+            >
+              {testing.openai ? '테스트 중...' : '🧪 테스트'}
+            </button>
+            {testResult.openai && (
+              <span style={{
+                fontSize: 13,
+                color: testResult.openai.success ? '#22c55e' : '#ef4444',
+              }}>
+                {testResult.openai.message}
+              </span>
+            )}
+          </div>
           <p style={styles.envHint}>
             또는 환경변수: <code>OPENAI_API_KEY</code>
           </p>
@@ -171,6 +239,23 @@ export default function SettingsPage() {
               <button style={styles.clearBtn} onClick={() => handleClear('claudeKey')}>
                 ✕
               </button>
+            )}
+          </div>
+          <div style={styles.testRow}>
+            <button
+              style={styles.testBtn}
+              onClick={() => handleTest('claude')}
+              disabled={testing.claude || !settings.claudeKey}
+            >
+              {testing.claude ? '테스트 중...' : '🧪 테스트'}
+            </button>
+            {testResult.claude && (
+              <span style={{
+                fontSize: 13,
+                color: testResult.claude.success ? '#22c55e' : '#ef4444',
+              }}>
+                {testResult.claude.message}
+              </span>
             )}
           </div>
           <p style={styles.envHint}>
@@ -327,6 +412,21 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontSize: 12,
     color: '#666',
     marginTop: 8,
+  },
+  testRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 12,
+  },
+  testBtn: {
+    padding: '8px 16px',
+    background: '#333',
+    border: '1px solid #444',
+    borderRadius: 6,
+    color: '#e5e5e5',
+    fontSize: 13,
+    cursor: 'pointer',
   },
   envBadge: {
     padding: '4px 8px',

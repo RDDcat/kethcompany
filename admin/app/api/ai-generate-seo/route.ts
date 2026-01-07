@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
 type AiModel = 'heuristic' | 'openai' | 'claude';
@@ -19,137 +19,186 @@ interface GenerateRequest {
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body: GenerateRequest = await request.json();
-    const { versionId, host, pageIds, fields, model = 'heuristic', apiKey } = body;
+  const body: GenerateRequest = await request.json();
+  const { versionId, host, pageIds, fields, model = 'heuristic', apiKey } = body;
 
-    // API 키 결정: 클라이언트 전달 → 환경변수 순
-    const openaiKey = apiKey || process.env.OPENAI_API_KEY;
-    const claudeKey = apiKey || process.env.ANTHROPIC_API_KEY;
+  // 디버깅 로그
+  console.log('=== AI Generate SEO (Streaming) ===');
+  console.log('Model:', model);
+  console.log('API Key received:', apiKey ? `${apiKey.substring(0, 10)}...` : 'none');
 
-    if (!versionId || !host) {
-      return NextResponse.json(
-        { success: false, error: 'versionId, host 필요' },
-        { status: 400 }
-      );
-    }
+  // API 키 결정
+  const openaiKey = model === 'openai' ? (apiKey || process.env.OPENAI_API_KEY) : process.env.OPENAI_API_KEY;
+  const claudeKey = model === 'claude' ? (apiKey || process.env.ANTHROPIC_API_KEY) : process.env.ANTHROPIC_API_KEY;
 
-    // 적용할 필드가 하나도 없으면 에러
-    if (!fields.title && !fields.description && !fields.json_ld && !fields.canonical && !fields.h1_selector) {
-      return NextResponse.json(
-        { success: false, error: '적용할 필드를 선택하세요' },
-        { status: 400 }
-      );
-    }
+  // 스트리밍 응답 생성
+  const encoder = new TextEncoder();
+  
+  const stream = new ReadableStream({
+    async start(controller) {
+      // 헬퍼 함수: 이벤트 전송
+      const sendEvent = (data: object) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      };
 
-    // 대상 페이지 조회
-    let query = supabase
-      .from('seo_pages')
-      .select('*')
-      .eq('version_id', versionId);
-
-    if (pageIds && pageIds.length > 0) {
-      query = query.in('id', pageIds);
-    }
-
-    const { data: pages, error: pagesError } = await query;
-
-    if (pagesError || !pages) {
-      return NextResponse.json(
-        { success: false, error: pagesError?.message || '페이지 조회 실패' },
-        { status: 500 }
-      );
-    }
-
-    // 결과 저장용
-    const results: { pageId: string; path: string; status: 'success' | 'error'; message?: string; model?: string }[] = [];
-
-    // 사용된 모델 추적
-    let usedModel = model;
-
-    // 각 페이지 처리
-    for (const page of pages) {
       try {
-        // 1. 실제 페이지 크롤링
-        const fullUrl = `https://${host}${page.path}`;
-        const pageContent = await fetchPageContent(fullUrl);
-
-        if (!pageContent) {
-          results.push({ pageId: page.id, path: page.path, status: 'error', message: '페이지 로드 실패', model: usedModel });
-          continue;
+        // 유효성 검사
+        if (!versionId || !host) {
+          sendEvent({ type: 'error', error: 'versionId, host 필요' });
+          controller.close();
+          return;
         }
 
-        // 2. AI로 SEO 데이터 생성 (모델 선택)
-        const seoData = await generateSeoWithModel(
-          pageContent,
-          fullUrl,
-          fields,
-          model,
-          openaiKey,
-          claudeKey
-        );
-
-        if (!seoData) {
-          results.push({ pageId: page.id, path: page.path, status: 'error', message: 'AI 생성 실패', model: usedModel });
-          continue;
+        if (!fields.title && !fields.description && !fields.json_ld && !fields.canonical && !fields.h1_selector) {
+          sendEvent({ type: 'error', error: '적용할 필드를 선택하세요' });
+          controller.close();
+          return;
         }
 
-        usedModel = seoData.usedModel || model;
-
-        // 3. DB 업데이트 (선택된 필드만)
-        const updateData: Record<string, unknown> = {
-          updated_at: new Date().toISOString(),
-        };
-
-        if (fields.title && seoData.title) updateData.title = seoData.title;
-        if (fields.description && seoData.description) updateData.description = seoData.description;
-        if (fields.json_ld && seoData.json_ld) updateData.json_ld = seoData.json_ld;
-        if (fields.canonical && seoData.canonical) updateData.canonical = seoData.canonical;
-        if (fields.h1_selector && seoData.h1_selector) updateData.h1_selector = seoData.h1_selector;
-
-        const { error: updateError } = await supabase
+        // 대상 페이지 조회
+        let query = supabase
           .from('seo_pages')
-          .update(updateData)
-          .eq('id', page.id);
+          .select('*')
+          .eq('version_id', versionId);
 
-        if (updateError) {
-          results.push({ pageId: page.id, path: page.path, status: 'error', message: updateError.message, model: usedModel });
-        } else {
-          results.push({ pageId: page.id, path: page.path, status: 'success', model: usedModel });
+        if (pageIds && pageIds.length > 0) {
+          query = query.in('id', pageIds);
         }
+
+        const { data: pages, error: pagesError } = await query;
+
+        if (pagesError || !pages) {
+          sendEvent({ type: 'error', error: pagesError?.message || '페이지 조회 실패' });
+          controller.close();
+          return;
+        }
+
+        const total = pages.length;
+        sendEvent({ type: 'init', total, model });
+
+        // 결과 저장용
+        const results: { pageId: string; path: string; status: 'success' | 'error'; message?: string; model?: string }[] = [];
+        let usedModel = model;
+
+        // 딜레이 함수
+        const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+        // 각 페이지 처리
+        for (let i = 0; i < pages.length; i++) {
+          const page = pages[i];
+          console.log(`Processing page ${i + 1}/${pages.length}: ${page.path}`);
+          
+          // 진행 상황 전송
+          sendEvent({ type: 'progress', current: i + 1, total, path: page.path });
+          
+          // Rate Limit 방지 딜레이
+          if (model !== 'heuristic' && i > 0) {
+            await delay(500);
+          }
+
+          try {
+            // 1. 페이지 크롤링
+            const fullUrl = `https://${host}${page.path}`;
+            const pageContent = await fetchPageContent(fullUrl);
+
+            if (!pageContent) {
+              results.push({ pageId: page.id, path: page.path, status: 'error', message: '페이지 로드 실패', model: usedModel });
+              continue;
+            }
+
+            // 2. AI로 SEO 데이터 생성
+            const seoData = await generateSeoWithModel(
+              pageContent,
+              fullUrl,
+              fields,
+              model,
+              openaiKey,
+              claudeKey
+            );
+
+            if (!seoData || seoData.error) {
+              results.push({ 
+                pageId: page.id, 
+                path: page.path, 
+                status: 'error', 
+                message: seoData?.error || 'AI 생성 실패', 
+                model: seoData?.usedModel || usedModel 
+              });
+              continue;
+            }
+
+            usedModel = seoData.usedModel || model;
+
+            // 3. DB 업데이트
+            const updateData: Record<string, unknown> = {
+              updated_at: new Date().toISOString(),
+            };
+
+            if (fields.title && seoData.title) updateData.title = seoData.title;
+            if (fields.description && seoData.description) updateData.description = seoData.description;
+            if (fields.json_ld && seoData.json_ld) updateData.json_ld = seoData.json_ld;
+            if (fields.canonical && seoData.canonical) updateData.canonical = seoData.canonical;
+            if (fields.h1_selector && seoData.h1_selector) updateData.h1_selector = seoData.h1_selector;
+
+            const { error: updateError } = await supabase
+              .from('seo_pages')
+              .update(updateData)
+              .eq('id', page.id);
+
+            if (updateError) {
+              results.push({ pageId: page.id, path: page.path, status: 'error', message: updateError.message, model: usedModel });
+            } else {
+              results.push({ pageId: page.id, path: page.path, status: 'success', model: usedModel });
+            }
+          } catch (e) {
+            results.push({ pageId: page.id, path: page.path, status: 'error', message: String(e), model: usedModel });
+          }
+        }
+
+        const successCount = results.filter(r => r.status === 'success').length;
+        const errorCount = results.filter(r => r.status === 'error').length;
+
+        // AI 생성 완료 플래그 업데이트 (시도만 해도 검토 가능하게)
+        console.log('Updating ai_generated flag for version:', versionId);
+        const { error: flagError } = await supabase
+          .from('seo_page_versions')
+          .update({
+            ai_generated: true,
+            ai_generated_at: new Date().toISOString(),
+          })
+          .eq('id', versionId);
+        
+        if (flagError) {
+          console.error('Failed to update ai_generated flag:', flagError.message);
+        } else {
+          console.log('ai_generated flag updated successfully');
+        }
+
+        // 완료 이벤트 전송
+        sendEvent({ 
+          type: 'complete', 
+          success: true,
+          total,
+          successCount,
+          errorCount,
+          model: usedModel,
+          results,
+        });
       } catch (e) {
-        results.push({ pageId: page.id, path: page.path, status: 'error', message: String(e), model: usedModel });
+        sendEvent({ type: 'error', error: String(e) });
+      } finally {
+        controller.close();
       }
     }
+  });
 
-    const successCount = results.filter(r => r.status === 'success').length;
-    const errorCount = results.filter(r => r.status === 'error').length;
-
-    // AI 생성 완료 플래그 업데이트
-    if (successCount > 0) {
-      await supabase
-        .from('seo_page_versions')
-        .update({
-          ai_generated: true,
-          ai_generated_at: new Date().toISOString(),
-        })
-        .eq('id', versionId);
-    }
-
-    return NextResponse.json({
-      success: true,
-      total: pages.length,
-      successCount,
-      errorCount,
-      model,
-      results,
-    });
-  } catch (e) {
-    return NextResponse.json(
-      { success: false, error: String(e) },
-      { status: 500 }
-    );
-  }
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
 }
 
 // 페이지 HTML 가져오기
@@ -171,7 +220,7 @@ async function fetchPageContent(url: string): Promise<string | null> {
   }
 }
 
-// 모델별 SEO 데이터 생성
+// 모델별 SEO 데이터 생성 (선택한 모델만 사용, 폴백 없음)
 async function generateSeoWithModel(
   html: string,
   url: string,
@@ -186,6 +235,7 @@ async function generateSeoWithModel(
   canonical?: string;
   h1_selector?: string;
   usedModel?: string;
+  error?: string;
 } | null> {
   // HTML에서 텍스트 추출 (간략화)
   const textContent = extractTextContent(html);
@@ -193,20 +243,35 @@ async function generateSeoWithModel(
   const existingH1 = extractExistingH1(html);
   const possibleH1Selectors = findPossibleH1Selectors(html);
 
-  // 모델별 처리
-  if (model === 'openai' && openaiKey) {
+  // 휴리스틱 모델 선택 시
+  if (model === 'heuristic') {
+    const result = generateWithHeuristics(html, url, fields, existingTitle, existingH1, possibleH1Selectors);
+    return result ? { ...result, usedModel: 'heuristic' } : { error: '휴리스틱 생성 실패' };
+  }
+
+  // OpenAI 모델 선택 시
+  if (model === 'openai') {
+    if (!openaiKey) {
+      return { error: 'OpenAI API 키가 없음' };
+    }
     const result = await generateWithOpenAI(textContent, url, fields, existingTitle, existingH1, possibleH1Selectors, openaiKey);
-    return result ? { ...result, usedModel: 'openai' } : null;
+    if (!result) return { error: 'OpenAI 응답 없음' };
+    if (result.error) return { error: result.error, usedModel: 'openai' };
+    return { ...result, usedModel: 'openai' };
   }
 
-  if (model === 'claude' && claudeKey) {
+  // Claude 모델 선택 시
+  if (model === 'claude') {
+    if (!claudeKey) {
+      return { error: 'Claude API 키가 없음' };
+    }
     const result = await generateWithClaude(textContent, url, fields, existingTitle, existingH1, possibleH1Selectors, claudeKey);
-    return result ? { ...result, usedModel: 'claude' } : null;
+    if (!result) return { error: 'Claude 응답 없음' };
+    if (result.error) return { error: result.error, usedModel: 'claude' };
+    return { ...result, usedModel: 'claude' };
   }
 
-  // 휴리스틱 또는 API 키 없으면 휴리스틱 사용
-  const result = generateWithHeuristics(html, url, fields, existingTitle, existingH1, possibleH1Selectors);
-  return result ? { ...result, usedModel: 'heuristic' } : null;
+  return { error: '알 수 없는 모델' };
 }
 
 // SEO 프롬프트 생성
@@ -261,6 +326,7 @@ async function generateWithOpenAI(
   json_ld?: object;
   canonical?: string;
   h1_selector?: string;
+  error?: string;
 } | null> {
   const prompt = buildSeoPrompt(textContent, url, fields, existingTitle, existingH1, possibleH1Selectors);
 
@@ -281,7 +347,11 @@ async function generateWithOpenAI(
       }),
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      console.error('OpenAI API Error:', res.status, errorData);
+      return { error: `OpenAI API 오류 (${res.status}): ${errorData.error?.message || '알 수 없는 오류'}` };
+    }
 
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content;
@@ -313,6 +383,7 @@ async function generateWithClaude(
   json_ld?: object;
   canonical?: string;
   h1_selector?: string;
+  error?: string;
 } | null> {
   const prompt = buildSeoPrompt(textContent, url, fields, existingTitle, existingH1, possibleH1Selectors);
 
@@ -334,20 +405,24 @@ async function generateWithClaude(
       }),
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      console.error('Claude API Error:', res.status, errorData);
+      return { error: `Claude API 오류 (${res.status}): ${errorData.error?.message || '알 수 없는 오류'}` };
+    }
 
     const data = await res.json();
     const content = data.content?.[0]?.text;
 
-    if (!content) return null;
+    if (!content) return { error: 'Claude 응답이 비어있음' };
 
     // JSON 추출
     const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
+    if (!jsonMatch) return { error: 'JSON 파싱 실패' };
 
     return JSON.parse(jsonMatch[0]);
-  } catch {
-    return null;
+  } catch (e) {
+    return { error: `Claude 호출 실패: ${String(e)}` };
   }
 }
 
