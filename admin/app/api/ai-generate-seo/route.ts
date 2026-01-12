@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import * as iconv from 'iconv-lite';
 
 type AiModel = 'heuristic' | 'openai' | 'claude';
 
@@ -97,14 +98,23 @@ export async function POST(request: NextRequest) {
           }
 
           try {
-            // 1. 페이지 크롤링
-            const fullUrl = `https://${host}${page.path}`;
-            const pageContent = await fetchPageContent(fullUrl);
+            // 1. 페이지 크롤링 (HTTPS 먼저 시도, 실패하면 HTTP로 폴백)
+            let fullUrl = `https://${host}${page.path}`;
+            let fetchResult = await fetchPageContent(fullUrl);
 
-            if (!pageContent) {
-              results.push({ pageId: page.id, path: page.path, status: 'error', message: '페이지 로드 실패', model: usedModel });
+            // HTTPS 실패 시 HTTP로 재시도
+            if (!fetchResult.html) {
+              console.log(`HTTPS failed, trying HTTP for ${page.path}`);
+              fullUrl = `http://${host}${page.path}`;
+              fetchResult = await fetchPageContent(fullUrl);
+            }
+
+            if (!fetchResult.html) {
+              results.push({ pageId: page.id, path: page.path, status: 'error', message: `페이지 로드 실패: ${fetchResult.error || '알 수 없는 오류'}`, model: usedModel });
               continue;
             }
+            
+            const pageContent = fetchResult.html;
 
             // 2. AI로 SEO 데이터 생성
             const seoData = await generateSeoWithModel(
@@ -201,23 +211,200 @@ export async function POST(request: NextRequest) {
   });
 }
 
-// 페이지 HTML 가져오기
-async function fetchPageContent(url: string): Promise<string | null> {
+// 페이지 HTML 가져오기 (인코딩 자동 감지)
+async function fetchPageContent(url: string): Promise<{ html: string | null; error?: string }> {
   try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SEOBot/1.0)',
-        'Accept': 'text/html',
-      },
+    console.log(`Fetching page: ${url}`);
+    
+    // SSL 검증 우회를 위해 https 모듈 사용
+    const https = await import('https');
+    const http = await import('http');
+    const { URL } = await import('url');
+    
+    const parsedUrl = new URL(url);
+    const isHttps = parsedUrl.protocol === 'https:';
+    const client = isHttps ? https : http;
+    
+    const { buffer, contentType } = await new Promise<{ buffer: Buffer; contentType: string }>((resolve, reject) => {
+      const options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (isHttps ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: 'GET',
+        headers: {
+          'Host': parsedUrl.hostname,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': '*/*',
+          'Accept-Language': 'ko-KR,ko;q=0.9',
+          'Connection': 'keep-alive',
+          'Cache-Control': 'no-cache',
+        },
+        rejectUnauthorized: false, // SSL 검증 우회
+        timeout: 15000,
+      };
+      
+      const req = client.request(options, (res) => {
+        // 리다이렉트 처리
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const redirectUrl = new URL(res.headers.location, url).toString();
+          console.log(`Redirecting to: ${redirectUrl}`);
+          fetchPageContent(redirectUrl).then(result => {
+            if (result.html) {
+              resolve({ buffer: Buffer.from(result.html, 'utf8'), contentType: 'text/html; charset=utf-8' });
+            } else {
+              reject(new Error(result.error || 'Redirect failed'));
+            }
+          }).catch(reject);
+          return;
+        }
+        
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        
+        const chunks: Buffer[] = [];
+        const ct = res.headers['content-type'] || '';
+        
+        res.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+        res.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          resolve({ buffer, contentType: ct });
+        });
+      });
+      
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Request timeout'));
+      });
+      req.end();
     });
-
-    if (!res.ok) return null;
-
-    const html = await res.text();
-    return html;
-  } catch {
-    return null;
+    
+    // 인코딩 감지 및 디코딩
+    const html = decodeHtml(buffer, contentType);
+    
+    console.log(`Page loaded: ${html.length} chars`);
+    
+    if (html.length < 100) {
+      return { html: null, error: '페이지 내용이 너무 짧음' };
+    }
+    
+    return { html };
+  } catch (e) {
+    const error = e as Error & { cause?: Error };
+    let errorMessage = error.message || String(e);
+    
+    // 더 자세한 에러 정보 추출
+    if (error.cause) {
+      errorMessage += ` (원인: ${error.cause.message || error.cause})`;
+    }
+    
+    // 일반적인 에러 유형 설명
+    if (errorMessage.includes('ENOTFOUND')) {
+      errorMessage = `DNS 조회 실패 - 도메인을 찾을 수 없음`;
+    } else if (errorMessage.includes('ECONNREFUSED')) {
+      errorMessage = `연결 거부됨 - 서버가 응답하지 않음`;
+    } else if (errorMessage.includes('ETIMEDOUT') || errorMessage.includes('aborted')) {
+      errorMessage = `타임아웃 - 서버 응답이 너무 느림`;
+    } else if (errorMessage.includes('CERT') || errorMessage.includes('SSL')) {
+      errorMessage = `SSL 인증서 오류`;
+    }
+    
+    console.error(`Fetch error for ${url}:`, errorMessage, error.cause || '');
+    return { html: null, error: errorMessage };
   }
+}
+
+// HTML 버퍼를 문자열로 디코딩 (인코딩 자동 감지)
+function decodeHtml(buffer: Buffer, contentType: string): string {
+  // 1. Content-Type 헤더에서 charset 확인
+  let charset = extractCharset(contentType);
+  
+  // 2. 헤더에 없으면 HTML meta 태그에서 확인 (일단 latin1로 읽어서 확인)
+  if (!charset) {
+    const tempHtml = buffer.toString('latin1');
+    charset = detectCharsetFromHtml(tempHtml);
+  }
+  
+  // 3. 인코딩 이름 정규화
+  charset = normalizeCharset(charset || 'utf-8');
+  
+  console.log(`Detected charset: ${charset}`);
+  
+  // 4. iconv-lite로 디코딩
+  let result: string;
+  if (iconv.encodingExists(charset)) {
+    result = iconv.decode(buffer, charset);
+  } else {
+    console.log(`Unsupported charset ${charset}, falling back to utf-8`);
+    result = buffer.toString('utf8');
+  }
+  
+  // 5. 깨진 문자 감지 (replacement character가 많으면 EUC-KR로 재시도)
+  const brokenCharCount = (result.match(/\uFFFD/g) || []).length;
+  if (brokenCharCount > 5 && charset !== 'euc-kr') {
+    console.log(`Detected ${brokenCharCount} broken chars, retrying with EUC-KR`);
+    const eucKrResult = iconv.decode(buffer, 'euc-kr');
+    const eucKrBrokenCount = (eucKrResult.match(/\uFFFD/g) || []).length;
+    
+    // EUC-KR이 더 나으면 사용
+    if (eucKrBrokenCount < brokenCharCount) {
+      console.log(`EUC-KR has fewer broken chars (${eucKrBrokenCount} vs ${brokenCharCount}), using EUC-KR`);
+      return eucKrResult;
+    }
+  }
+  
+  return result;
+}
+
+// Content-Type 헤더에서 charset 추출
+function extractCharset(contentType: string): string | null {
+  const match = contentType.match(/charset=([^\s;]+)/i);
+  return match ? match[1].replace(/["']/g, '') : null;
+}
+
+// HTML meta 태그에서 charset 감지
+function detectCharsetFromHtml(html: string): string | null {
+  // <meta charset="...">
+  let match = html.match(/<meta\s+charset=["']?([^"'\s>]+)/i);
+  if (match) return match[1];
+  
+  // <meta http-equiv="Content-Type" content="...; charset=...">
+  match = html.match(/<meta[^>]+content=["'][^"']*charset=([^"'\s;]+)/i);
+  if (match) return match[1];
+  
+  // <meta http-equiv="Content-Type" content="..."
+  match = html.match(/<meta[^>]+http-equiv=["']?Content-Type["']?[^>]+content=["'][^"']*charset=([^"'\s;]+)/i);
+  if (match) return match[1];
+  
+  return null;
+}
+
+// 인코딩 이름 정규화
+function normalizeCharset(charset: string): string {
+  const lower = charset.toLowerCase().replace(/[_-]/g, '');
+  
+  const mapping: Record<string, string> = {
+    'euckr': 'euc-kr',
+    'eucjp': 'euc-jp',
+    'gb2312': 'gb2312',
+    'gbk': 'gbk',
+    'big5': 'big5',
+    'shiftjis': 'shift_jis',
+    'sjis': 'shift_jis',
+    'iso88591': 'iso-8859-1',
+    'latin1': 'iso-8859-1',
+    'utf8': 'utf-8',
+    'utf16': 'utf-16',
+    'ksc5601': 'euc-kr',
+    'ksc56011987': 'euc-kr',
+    'ksksc56011987': 'euc-kr',
+    'windows949': 'euc-kr',
+    'cp949': 'euc-kr',
+  };
+  
+  return mapping[lower] || charset;
 }
 
 // 모델별 SEO 데이터 생성 (선택한 모델만 사용, 폴백 없음)

@@ -692,6 +692,7 @@ function ReviewModal({
   const [saving, setSaving] = useState(false);
   const [showAll, setShowAll] = useState(unreviewedPages.length === 0);
   const [selectorMode, setSelectorMode] = useState(false);
+  const [useHttps, setUseHttps] = useState(true); // HTTP/HTTPS 선택
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const displayPages = showAll ? pages : unreviewedPages;
@@ -799,7 +800,8 @@ function ReviewModal({
     );
   }
 
-  const fullUrl = `https://${host}${currentPage.path}`;
+  const protocol = useHttps ? 'https' : 'http';
+  const fullUrl = `${protocol}://${host}${currentPage.path}`;
 
   return (
     <div style={reviewStyles.overlay}>
@@ -815,6 +817,14 @@ function ReviewModal({
           </div>
           <div style={reviewStyles.headerRight}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#a0a0a0', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={useHttps}
+                onChange={e => setUseHttps(e.target.checked)}
+              />
+              HTTPS
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#a0a0a0', fontSize: 13, marginLeft: 8 }}>
               <input
                 type="checkbox"
                 checked={showAll}
